@@ -18,13 +18,13 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "stm32f4xx_hal.h"
-#include "stm32f4xx_hal_uart.h"
+#include "stm32f4xx_hal_gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 /* USER CODE END Includes */
 
@@ -56,6 +56,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 TIM_HandleTypeDef htim1;
+TIM_HandleTypeDef htim3;
 
 UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart2;
@@ -73,6 +74,17 @@ char ble1_rx_buffer[BLE_UART6_RX_BUFFER_SIZE];
 uint8_t ble1_rx_data;
 uint16_t ble1_rx_write_pos = 0;
 uint8_t ble1_connected = 0;
+
+// HC-SR04 variables
+volatile uint32_t echo_rise_time = 0;
+volatile uint32_t echo_fall_time = 0;
+volatile uint8_t echo_capture_complete = 0;
+volatile uint32_t distance_cm = 0;
+uint32_t distance_buffer[3] = {0, 0, 0};
+uint8_t distance_buffer_index = 0;
+uint32_t current_distance = 0;
+
+uint8_t jonahvinav = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -84,6 +96,7 @@ static void MX_USART2_UART_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_USART6_UART_Init(void);
 static void MX_USB_OTG_FS_PCD_Init(void);
+static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
 void BLE_Send_AT_Command(char *msg, UART_HandleTypeDef *huart, char* response, uint8_t expected_max_length);
 void BLE_Send_Handshake(UART_HandleTypeDef *huart, char* response);
@@ -95,8 +108,14 @@ void print_msg(char *msg);
 
 void Motor_A_Control(int8_t direction, int16_t speed);
 void Motor_B_Control(int8_t direction, int16_t speed);
+void Motors_Turn(uint16_t direction);
 void Motor_Direct_Test(void);
 void Motor_PWM_Test(void);
+
+void USS_Delay_us(uint16_t us);
+void USS_Init(void);
+void USS_Trigger(void);
+uint8_t USS_Read(uint32_t* distance);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -139,11 +158,16 @@ int main(void)
   MX_USART3_UART_Init();
   MX_USART6_UART_Init();
   MX_USB_OTG_FS_PCD_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
   // Motor_Direct_Test();
   // Motor_PWM_Test();
 
   BLE_InitConfigure();
+
+  // Initialize HC-SR04
+  USS_Init();
+  
 
   /* USER CODE END 2 */
 
@@ -151,13 +175,13 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   HAL_UART_Receive_IT(&huart6, &ble1_rx_data, 1);
 
+  // HAL_GPIO_WritePin(USS_1_TRIG_GPIO_Port, USS_1_TRIG_Pin, GPIO_PIN_RESET);
+  // Motors_Turn(0);
   while (1)
   {
     BLE_Process_Data(1);
 
-    HAL_Delay(500);
-
-
+    // HAL_Delay(500);
     // print RSSI
     // char response[50];
     // BLE_Send_AT_Command("RSSI?", &huart6, response, 50);
@@ -171,6 +195,46 @@ int main(void)
     // sprintf(print_buffer, "ADDR: %s\r\n", response);
     // print_msg(print_buffer);
     // HAL_Delay(100);
+
+
+    //trigger measurement
+    USS_Trigger();
+    //wait for echo with timeout
+    uint32_t start_time = HAL_GetTick();
+    while (!echo_capture_complete) {
+      if (HAL_GetTick() - start_time > 100) { // 100ms timeout
+        break;
+      }
+    }
+    // Read distance
+    uint32_t measured_distance = 0;
+    if (USS_Read(&measured_distance)) {
+      distance_buffer[distance_buffer_index] = measured_distance;
+      distance_buffer_index = (distance_buffer_index + 1) > 2 ? 0 : distance_buffer_index + 1;
+      current_distance = (distance_buffer[0] + distance_buffer[1] + distance_buffer[2]) / 3;
+      // sprintf(print_buffer, "%lu cm\r\n", current_distance);
+      // print_msg(print_buffer);
+    } else {
+      HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
+      HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
+    }
+
+
+    if (jonahvinav) {
+      if (current_distance < 15) {
+        Motor_A_Control(0, 0);
+        Motor_B_Control(0, 0);
+      } else {
+        Motor_A_Control(1, 750);
+        Motor_B_Control(1, 750);
+      }
+    } else {
+      Motor_A_Control(0, 0);
+      Motor_B_Control(0, 0);
+    }
+    
+    // Wait before next measurement
+    HAL_Delay(20);
 
     /* USER CODE END WHILE */
 
@@ -302,6 +366,64 @@ static void MX_TIM1_Init(void)
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);  // For Motor B
   /* USER CODE END TIM1_Init 2 */
   HAL_TIM_MspPostInit(&htim1);
+
+}
+
+/**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_IC_InitTypeDef sConfigIC = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 83;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 65535;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_IC_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
+  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
+  sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
+  sConfigIC.ICFilter = 0;
+  if (HAL_TIM_IC_ConfigChannel(&htim3, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
 
 }
 
@@ -487,18 +609,18 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOE_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOG_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, LD1_Pin|LD3_Pin|LD2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOF, MOTOR_B_IN1_Pin|MOTOR_A_IN2_Pin|MOTOR_B_IN2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOF, USS_1_TRIG_Pin|MOTOR_B_IN1_Pin|MOTOR_A_IN2_Pin|MOTOR_B_IN2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(MOTOR_A_IN1_GPIO_Port, MOTOR_A_IN1_Pin, GPIO_PIN_RESET);
@@ -519,14 +641,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : USS_1_ECHO_Pin */
-  GPIO_InitStruct.Pin = USS_1_ECHO_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(USS_1_ECHO_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : MOTOR_B_IN1_Pin MOTOR_A_IN2_Pin MOTOR_B_IN2_Pin */
-  GPIO_InitStruct.Pin = MOTOR_B_IN1_Pin|MOTOR_A_IN2_Pin|MOTOR_B_IN2_Pin;
+  /*Configure GPIO pins : USS_1_TRIG_Pin MOTOR_B_IN1_Pin MOTOR_A_IN2_Pin MOTOR_B_IN2_Pin */
+  GPIO_InitStruct.Pin = USS_1_TRIG_Pin|MOTOR_B_IN1_Pin|MOTOR_A_IN2_Pin|MOTOR_B_IN2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -538,12 +654,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(MOTOR_A_IN1_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : USS_1_TRIG_Pin */
-  GPIO_InitStruct.Pin = USS_1_TRIG_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(USS_1_TRIG_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : USB_PowerSwitchOn_Pin */
   GPIO_InitStruct.Pin = USB_PowerSwitchOn_Pin;
@@ -617,6 +727,16 @@ void Motor_B_Control(int8_t direction, int16_t speed) {
 
   // set speed
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, speed);
+}
+
+void Motors_Turn(uint16_t direction) {
+  uint16_t time = 80 / 36 * direction;;
+
+  Motor_A_Control(-1, 1000);
+  Motor_B_Control(1, 1000);
+  HAL_Delay(time);
+  Motor_A_Control(0, 0);
+  Motor_B_Control(0, 0);
 }
 
 void Motor_PWM_Test(void) {
@@ -904,25 +1024,111 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 
 void BLE_Process_Data(uint8_t ble_num) {
   if (ble_num == 1 && ble1_rx_write_pos > 0) {
-    // Check if we have a complete message (ends with \r\n or similar)
+    // Check if we have a complete message (ends with \n)
     if (strstr(ble1_rx_buffer, "\n") != NULL) {
       sprintf(print_buffer, "BLE1 RX: %s\r\n", ble1_rx_buffer);
       print_msg(print_buffer);
-      
 
-      if (strstr(ble1_rx_buffer, "GO") != NULL) {
+      if (strstr(ble1_rx_buffer, "F1") != NULL) {
+        Motor_A_Control(1, 500);
+        Motor_B_Control(1, 500);
+      } else if (strstr(ble1_rx_buffer, "F2") != NULL) {
         Motor_A_Control(1, 750);
         Motor_B_Control(1, 750);
-      } else if (strstr(ble1_rx_buffer, "STOP") != NULL) {
+      } else if (strstr(ble1_rx_buffer, "F3") != NULL) {
+        Motor_A_Control(1, 1000);
+        Motor_B_Control(1, 1000);
+      } else if (strstr(ble1_rx_buffer, "S") != NULL) {
         Motor_A_Control(0, 0);
         Motor_B_Control(0, 0);
-      } else if (strstr(ble1_rx_buffer, "BACK") != NULL) {
+        jonahvinav = 0;
+      } else if (strstr(ble1_rx_buffer, "B1") != NULL) {
+        Motor_A_Control(-1, 500);
+        Motor_B_Control(-1, 500);
+      } else if (strstr(ble1_rx_buffer, "B2") != NULL) {
         Motor_A_Control(-1, 750);
         Motor_B_Control(-1, 750);
+      } else if (strstr(ble1_rx_buffer, "B3") != NULL) {
+        Motor_A_Control(-1, 1000);
+        Motor_B_Control(-1, 1000);
+      } else if (strstr(ble1_rx_buffer, "T") != NULL ) {
+        char direction_buffer[4];
+        for (int i = 1; i < 5; i++) {
+          if (ble1_rx_buffer[i] != '\n') {
+            direction_buffer[i - 1] = ble1_rx_buffer[i];
+          } else {
+            direction_buffer[i - 1] = '\0';
+            break;
+          }
+        }
+        uint16_t direction = atoi(direction_buffer);
+        Motors_Turn(direction);
+      } else if (strstr(ble1_rx_buffer, "GO") != NULL) {
+        jonahvinav = 1;
       }
       
       ble1_rx_write_pos = 0;
       ble1_rx_buffer[0] = '\0';
+    }
+  }
+}
+
+//USS ultrasonic sensor functions
+void USS_Delay_us(uint16_t us){
+  __HAL_TIM_SET_COUNTER(&htim3, 0);
+  while (__HAL_TIM_GET_COUNTER(&htim3) < us);
+}
+void USS_Init(void){
+  // Start the timer base
+  HAL_TIM_Base_Start(&htim3);
+  
+  // Start input capture in interrupt mode
+  HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_1);
+}
+void USS_Trigger(void){
+  // Reset capture complete flag
+  echo_capture_complete = 0;
+  
+  // Generate 10us pulse on TRIG pin
+  HAL_GPIO_WritePin(USS_1_TRIG_GPIO_Port, USS_1_TRIG_Pin, GPIO_PIN_SET);
+  USS_Delay_us(10);
+  HAL_GPIO_WritePin(USS_1_TRIG_GPIO_Port, USS_1_TRIG_Pin, GPIO_PIN_RESET);
+}
+uint8_t USS_Read(uint32_t* distance){
+  if (!echo_capture_complete)
+    return 0;
+    
+  // Calculate pulse width
+  uint32_t pulse_width;
+  if (echo_fall_time > echo_rise_time) {
+    pulse_width = echo_fall_time - echo_rise_time;
+  } else {
+    // Handle timer overflow
+    pulse_width = ((0xFFFF - echo_rise_time) + echo_fall_time + 1);
+  }
+  
+  // Calculate distance: d = (t × 343 m/s) ÷ 2
+  // For cm: d = (t(μs) × 0.0343 cm/μs) ÷ 2 = t × 0.01715
+  // Simplified with integer math: d = t × 343 ÷ 20000
+  *distance = (pulse_width * 343) / 20000;
+  
+  return 1;
+}
+
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
+  // if it is tim3 (USS) and it is the echo channel (tim3 channel 1)
+  if (htim->Instance == TIM3 && htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1) {
+    if (HAL_GPIO_ReadPin(USS_1_ECHO_GPIO_Port, USS_1_ECHO_Pin) == GPIO_PIN_SET) {
+      // Rising edge detected
+      echo_rise_time = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+      // Change polarity to capture falling edge
+      __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_FALLING);
+    } else {
+      // Falling edge detected
+      echo_fall_time = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+      // Change back to capture rising edge
+      __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_RISING);
+      echo_capture_complete = 1;
     }
   }
 }
