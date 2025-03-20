@@ -19,13 +19,13 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32f4xx_hal.h"
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
+#include "stm32f4xx_hal_uart.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -45,6 +45,8 @@
 #define BLE_WAKE_ERROR 3
 #define BLE_AT_COMMAND_ERROR 4
 #define TIM_INIT_ERROR 5
+
+#define BLE_UART6_RX_BUFFER_SIZE 256
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -65,6 +67,12 @@ PCD_HandleTypeDef hpcd_USB_OTG_FS;
 /* USER CODE BEGIN PV */
 uint8_t current_error = 0;
 uint32_t current_HAL_status = 0;
+char print_buffer[300];
+
+char ble1_rx_buffer[BLE_UART6_RX_BUFFER_SIZE];
+uint8_t ble1_rx_data;
+uint16_t ble1_rx_write_pos = 0;
+uint8_t ble1_connected = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -80,6 +88,8 @@ static void MX_USB_OTG_FS_PCD_Init(void);
 void BLE_Send_AT_Command(char *msg, UART_HandleTypeDef *huart, char* response, uint8_t expected_max_length);
 void BLE_Send_Handshake(UART_HandleTypeDef *huart, char* response);
 uint8_t BLE_Wake_From_Sleep(UART_HandleTypeDef *huart, char* response);
+void BLE_InitConfigure(void);  
+void BLE_Process_Data(uint8_t ble_num);
 
 void print_msg(char *msg);
 
@@ -133,20 +143,38 @@ int main(void)
   // Motor_Direct_Test();
   // Motor_PWM_Test();
 
-  //bluetooth handshake:
-  char response[50];
-  BLE_Send_Handshake(&huart6, response);
+  BLE_InitConfigure();
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  HAL_UART_Receive_IT(&huart6, &ble1_rx_data, 1);
+
   while (1)
   {
+    BLE_Process_Data(1);
+
+    HAL_Delay(500);
+
+
+    // print RSSI
+    // char response[50];
+    // BLE_Send_AT_Command("RSSI?", &huart6, response, 50);
+    // sprintf(print_buffer, "RSSI: %s\r\n", response);
+    // print_msg(print_buffer);
+    // HAL_Delay(500);
+    
+    // print address
+    // char response[50];
+    // BLE_Send_AT_Command("ADDR?", &huart6, response, 50);
+    // sprintf(print_buffer, "ADDR: %s\r\n", response);
+    // print_msg(print_buffer);
+    // HAL_Delay(100);
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    HAL_Delay(500);
   }
   /* USER CODE END 3 */
 }
@@ -483,7 +511,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(USER_Btn_GPIO_Port, &GPIO_InitStruct);
-  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
   /*Configure GPIO pins : LD1_Pin LD3_Pin LD2_Pin */
   GPIO_InitStruct.Pin = LD1_Pin|LD3_Pin|LD2_Pin;
@@ -491,6 +518,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : USS_1_ECHO_Pin */
+  GPIO_InitStruct.Pin = USS_1_ECHO_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(USS_1_ECHO_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : MOTOR_B_IN1_Pin MOTOR_A_IN2_Pin MOTOR_B_IN2_Pin */
   GPIO_InitStruct.Pin = MOTOR_B_IN1_Pin|MOTOR_A_IN2_Pin|MOTOR_B_IN2_Pin;
@@ -506,6 +539,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(MOTOR_A_IN1_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : USS_1_TRIG_Pin */
+  GPIO_InitStruct.Pin = USS_1_TRIG_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(USS_1_TRIG_GPIO_Port, &GPIO_InitStruct);
+
   /*Configure GPIO pin : USB_PowerSwitchOn_Pin */
   GPIO_InitStruct.Pin = USB_PowerSwitchOn_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
@@ -519,8 +558,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(USB_OverCurrent_GPIO_Port, &GPIO_InitStruct);
 
-  /* USER CODE BEGIN MX_GPIO_Init_2 */
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+  // HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
@@ -666,6 +709,10 @@ void Motor_Direct_Test(void) {
 
 
 void BLE_Send_AT_Command(char *msg, UART_HandleTypeDef *huart, char* response, uint8_t expected_max_length) {
+
+  // abort reception
+  HAL_UART_AbortReceive_IT(huart);
+
   char cmd[50];
   sprintf(cmd, "AT+%s", msg);
   memset(response, 0, expected_max_length);
@@ -678,22 +725,28 @@ void BLE_Send_AT_Command(char *msg, UART_HandleTypeDef *huart, char* response, u
     Error_Handler();
   }
 
-  HAL_Delay(100);
-
   //receive response
-  current_HAL_status = HAL_UART_Receive(huart, (uint8_t*)response, expected_max_length, 2000); 
-  if (current_HAL_status == HAL_OK || current_HAL_status == HAL_TIMEOUT) {
-    print_msg("Received data\r\n");
-  } else {
-    current_error = BLE_AT_COMMAND_ERROR;
-    print_msg("Receive error\r\n");
-    Error_Handler();
-  }
+  uint8_t string_length = 0;
+  current_HAL_status = HAL_OK;
+  char b[1];
+  do {
+    current_HAL_status = HAL_UART_Receive(huart, (uint8_t*)b, 1, 100);
+    if (current_HAL_status == HAL_OK) {
+      response[string_length++] = *b;
+    } else if (current_HAL_status == HAL_TIMEOUT) {
+      break;
+    } else {
+      current_error = BLE_AT_HANDSHAKE_ERROR;
+      print_msg("Receive error\r\n");
+      Error_Handler();
+    }
+  } while (current_HAL_status == HAL_OK);
+  
+  // add null terminator
+  response[string_length] = '\0';
 
-  // print whatever we received
-  char r[100];
-  sprintf(r, "Response: '%s'\r\n", response);
-  print_msg(r);
+  // restart reception
+  HAL_UART_Receive_IT(huart, &ble1_rx_data, 1);
 }
 
 void BLE_Send_Handshake(UART_HandleTypeDef *huart, char* response) {
@@ -708,22 +761,27 @@ void BLE_Send_Handshake(UART_HandleTypeDef *huart, char* response) {
     current_error = BLE_AT_HANDSHAKE_ERROR;
     Error_Handler();
   }
-  
-  // HAL_Delay(100);
 
-  current_HAL_status = HAL_UART_Receive(huart, (uint8_t*)response, 2, 2000);
-  if (current_HAL_status == HAL_OK || current_HAL_status == HAL_TIMEOUT) {
-    print_msg("Received data\r\n");
-  } else {
-    current_error = BLE_AT_HANDSHAKE_ERROR;
-    print_msg("Receive error\r\n");
-    Error_Handler();
-  }
+  // receive response
+  uint8_t string_length = 0;
+  current_HAL_status = HAL_OK;
+  char b[1];
+  do {
+    current_HAL_status = HAL_UART_Receive(huart, (uint8_t*)b, 1, 100);
+    if (current_HAL_status == HAL_OK) {
+      response[string_length++] = *b;
+    } else if (current_HAL_status == HAL_TIMEOUT) {
+      break;
+    } else {
+      current_error = BLE_AT_HANDSHAKE_ERROR;
+      print_msg("Receive error\r\n");
+      Error_Handler();
+    }
+  } while (current_HAL_status == HAL_OK);
+
   
-  // Print whatever we received
-  char msg[100];
-  sprintf(msg, "Response: '%s'\r\n", response);
-  print_msg(msg);
+  // add null terminator
+  response[string_length] = '\0';
 }
 
 uint8_t BLE_Wake_From_Sleep(UART_HandleTypeDef *huart, char* response) {
@@ -743,8 +801,6 @@ uint8_t BLE_Wake_From_Sleep(UART_HandleTypeDef *huart, char* response) {
     Error_Handler();
   }
 
-  response[8] = '\0';
-
   if (strstr(response, "OK+WAKE") != NULL) {
     return 1;
   } else {
@@ -753,19 +809,17 @@ uint8_t BLE_Wake_From_Sleep(UART_HandleTypeDef *huart, char* response) {
 
 }
 
-
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   if (GPIO_Pin == USER_Btn_Pin) {
     // simple debounce
-    HAL_Delay(500);
-
+    HAL_Delay(50);
     print_msg("Button pressed!\r\n");
 
     // TO BE USED IN CASE OF PWM FAILURE:
     // Motor_Direct_Test();
 
     // Motor test:
-    Motor_PWM_Test();
+    // Motor_PWM_Test();
 
     
     // Bluetooth handshake test:
@@ -773,6 +827,106 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     // BLE_Send_Handshake(&huart6, response);
   }
 }
+
+void BLE_InitConfigure(void) {
+  //bluetooth handshake:
+  char response[50];
+  BLE_Send_Handshake(&huart6, response);
+  sprintf(print_buffer, "HANDSHAKE: %s\r\n", response);
+  print_msg(print_buffer);
+  if (strcmp(response, "OK+LOST\r\n") == 0) {
+    print_msg("Disconnected from previous connection\r\n");
+    HAL_Delay(500);
+  }
+
+  // print address, passkey
+  BLE_Send_AT_Command("ADDR?", &huart6, response, 50);
+  sprintf(print_buffer, "ADDR: %s\r\n", response);
+  print_msg(print_buffer);
+  BLE_Send_AT_Command("PASS?", &huart6, response, 50);
+  sprintf(print_buffer, "PASS: %s\r\n", response);
+  print_msg(print_buffer);
+
+  // set name
+  BLE_Send_AT_Command("NAMEstummon_ble_1", &huart6, response, 50);
+  sprintf(print_buffer, "NAME: %s\r\n", response);
+  print_msg(print_buffer);
+
+  // set slave
+  BLE_Send_AT_Command("ROLE0", &huart6, response, 50);
+  sprintf(print_buffer, "ROLE: %s\r\n", response);
+  print_msg(print_buffer);
+
+  // wait for reboot
+  HAL_Delay(500);
+
+  // set advi
+  BLE_Send_AT_Command("ADVI0", &huart6, response, 50);
+  sprintf(print_buffer, "ADVI: %s\r\n", response);
+  print_msg(print_buffer);
+
+  // query mode
+  BLE_Send_AT_Command("MODE?", &huart6, response, 50);
+  sprintf(print_buffer, "MODE: %s\r\n", response);
+  print_msg(print_buffer);
+}
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+  if (huart != &huart6)
+    return;
+
+  // Put byte in buffer and increment write position
+  ble1_rx_buffer[ble1_rx_write_pos++] = ble1_rx_data;
+  ble1_rx_buffer[ble1_rx_write_pos] = '\0'; // Null-terminate
+
+  // Check for connection messages with proper line endings
+  if (strstr(ble1_rx_buffer, "OK+CONN") != NULL) {
+    ble1_connected = 1;
+    print_msg("Connected\r\n");
+    ble1_rx_write_pos = 0; // Reset buffer
+    ble1_rx_buffer[0] = '\0';
+  } 
+  else if (strstr(ble1_rx_buffer, "OK+LOST") != NULL) {
+    ble1_connected = 0;
+    print_msg("Disconnected\r\n");
+    ble1_rx_write_pos = 0; // Reset buffer
+    ble1_rx_buffer[0] = '\0';
+  }
+
+  // Safety check - if buffer is getting too full, reset it
+  if (ble1_rx_write_pos >= BLE_UART6_RX_BUFFER_SIZE - 2) {
+    ble1_rx_write_pos = 0;
+    ble1_rx_buffer[0] = '\0';
+  }
+
+  // Restart the interrupt reception
+  HAL_UART_Receive_IT(&huart6, &ble1_rx_data, 1);
+}
+
+void BLE_Process_Data(uint8_t ble_num) {
+  if (ble_num == 1 && ble1_rx_write_pos > 0) {
+    // Check if we have a complete message (ends with \r\n or similar)
+    if (strstr(ble1_rx_buffer, "\n") != NULL) {
+      sprintf(print_buffer, "BLE1 RX: %s\r\n", ble1_rx_buffer);
+      print_msg(print_buffer);
+      
+
+      if (strstr(ble1_rx_buffer, "GO") != NULL) {
+        Motor_A_Control(1, 750);
+        Motor_B_Control(1, 750);
+      } else if (strstr(ble1_rx_buffer, "STOP") != NULL) {
+        Motor_A_Control(0, 0);
+        Motor_B_Control(0, 0);
+      } else if (strstr(ble1_rx_buffer, "BACK") != NULL) {
+        Motor_A_Control(-1, 750);
+        Motor_B_Control(-1, 750);
+      }
+      
+      ble1_rx_write_pos = 0;
+      ble1_rx_buffer[0] = '\0';
+    }
+  }
+}
+
 /* USER CODE END 4 */
 
 /**
