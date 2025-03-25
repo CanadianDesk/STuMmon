@@ -18,7 +18,9 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "stm32f4xx_hal_gpio.h"
+#include "stm32f446xx.h"
+#include "stm32f4xx_hal.h"
+#include "stm32f4xx_hal_uart.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -46,7 +48,8 @@
 #define BLE_AT_COMMAND_ERROR 4
 #define TIM_INIT_ERROR 5
 
-#define BLE_UART6_RX_BUFFER_SIZE 256
+#define BLE_RX_BUFFER_SIZE 256
+#define MAX_DISTANCE 40
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -57,6 +60,8 @@
 /* Private variables ---------------------------------------------------------*/
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim4;
+TIM_HandleTypeDef htim5;
 
 UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart2;
@@ -70,21 +75,49 @@ uint8_t current_error = 0;
 uint32_t current_HAL_status = 0;
 char print_buffer[300];
 
-char ble1_rx_buffer[BLE_UART6_RX_BUFFER_SIZE];
+char ble1_rx_buffer[BLE_RX_BUFFER_SIZE];
 uint8_t ble1_rx_data;
 uint16_t ble1_rx_write_pos = 0;
 uint8_t ble1_connected = 0;
 
+char ble2_rx_buffer[BLE_RX_BUFFER_SIZE];
+uint8_t ble2_rx_data;
+uint16_t ble2_rx_write_pos = 0;
+uint8_t ble2_connected = 0;
+
+char ble3_rx_buffer[BLE_RX_BUFFER_SIZE];
+uint8_t ble3_rx_data; 
+uint16_t ble3_rx_write_pos = 0;
+uint8_t ble3_connected = 0;
+
 // HC-SR04 variables
-volatile uint32_t echo_rise_time = 0;
-volatile uint32_t echo_fall_time = 0;
-volatile uint8_t echo_capture_complete = 0;
-volatile uint32_t distance_cm = 0;
-uint32_t distance_buffer[3] = {0, 0, 0};
-uint8_t distance_buffer_index = 0;
-uint32_t current_distance = 0;
+// USS_1
+volatile uint32_t echo_rise_time_1 = 0;
+volatile uint32_t echo_fall_time_1 = 0;
+volatile uint8_t echo_capture_complete_1 = 0;
+volatile uint32_t distance_cm_1 = 0;
+uint32_t distance_buffer_1[3] = {0, 0, 0};
+uint8_t distance_buffer_index_1 = 0;
+uint32_t current_distance_M = 0;
+// USS_2
+volatile uint32_t echo_rise_time_2 = 0;
+volatile uint32_t echo_fall_time_2 = 0;
+volatile uint8_t echo_capture_complete_2 = 0;
+volatile uint32_t distance_cm_2 = 0;
+uint32_t distance_buffer_2[3] = {0, 0, 0};
+uint8_t distance_buffer_index_2 = 0;
+uint32_t current_distance_L = 0;
+// USS_3
+volatile uint32_t echo_rise_time_3 = 0;
+volatile uint32_t echo_fall_time_3 = 0;
+volatile uint8_t echo_capture_complete_3 = 0;
+volatile uint32_t distance_cm_3 = 0;
+uint32_t distance_buffer_3[3] = {0, 0, 0};
+uint8_t distance_buffer_index_3 = 0;
+uint32_t current_distance_R = 0;
 
 uint8_t jonahvinav = 0;
+uint8_t stuck = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -97,25 +130,34 @@ static void MX_USART3_UART_Init(void);
 static void MX_USART6_UART_Init(void);
 static void MX_USB_OTG_FS_PCD_Init(void);
 static void MX_TIM3_Init(void);
+static void MX_TIM4_Init(void);
+static void MX_TIM5_Init(void);
 /* USER CODE BEGIN PFP */
 void BLE_Send_AT_Command(char *msg, UART_HandleTypeDef *huart, char* response, uint8_t expected_max_length);
 void BLE_Send_Handshake(UART_HandleTypeDef *huart, char* response);
 uint8_t BLE_Wake_From_Sleep(UART_HandleTypeDef *huart, char* response);
 void BLE_InitConfigure(void);  
 void BLE_Process_Data(uint8_t ble_num);
+void BLE_Get_RSSI(UART_HandleTypeDef *huart, char* response);
 
 void print_msg(char *msg);
 
 void Motor_A_Control(int8_t direction, int16_t speed);
 void Motor_B_Control(int8_t direction, int16_t speed);
-void Motors_Turn(uint16_t direction);
+void Motors_Turn(int16_t direction);
 void Motor_Direct_Test(void);
 void Motor_PWM_Test(void);
 
 void USS_Delay_us(uint16_t us);
-void USS_Init(void);
-void USS_Trigger(void);
-uint8_t USS_Read(uint32_t* distance);
+void USS_Init_1(void);
+void USS_Trigger_1(void);
+uint8_t USS_Read_1(uint32_t* distance);
+void USS_Init_2(void);
+void USS_Trigger_2(void);
+uint8_t USS_Read_2(uint32_t* distance);
+void USS_Init_3(void);
+void USS_Trigger_3(void);
+uint8_t USS_Read_3(uint32_t* distance);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -159,6 +201,8 @@ int main(void)
   MX_USART6_UART_Init();
   MX_USB_OTG_FS_PCD_Init();
   MX_TIM3_Init();
+  MX_TIM4_Init();
+  MX_TIM5_Init();
   /* USER CODE BEGIN 2 */
   // Motor_Direct_Test();
   // Motor_PWM_Test();
@@ -166,7 +210,9 @@ int main(void)
   BLE_InitConfigure();
 
   // Initialize HC-SR04
-  USS_Init();
+  USS_Init_1();
+  USS_Init_2();
+  USS_Init_3();
   
 
   /* USER CODE END 2 */
@@ -177,61 +223,150 @@ int main(void)
 
   // HAL_GPIO_WritePin(USS_1_TRIG_GPIO_Port, USS_1_TRIG_Pin, GPIO_PIN_RESET);
   // Motors_Turn(0);
+
   while (1)
   {
     BLE_Process_Data(1);
 
-    // HAL_Delay(500);
-    // print RSSI
-    // char response[50];
-    // BLE_Send_AT_Command("RSSI?", &huart6, response, 50);
-    // sprintf(print_buffer, "RSSI: %s\r\n", response);
-    // print_msg(print_buffer);
-    // HAL_Delay(500);
-    
-    // print address
-    // char response[50];
-    // BLE_Send_AT_Command("ADDR?", &huart6, response, 50);
-    // sprintf(print_buffer, "ADDR: %s\r\n", response);
-    // print_msg(print_buffer);
-    // HAL_Delay(100);
-
-
-    //trigger measurement
-    USS_Trigger();
+    //trigger measurement for USS 1
+    USS_Trigger_1();
     //wait for echo with timeout
     uint32_t start_time = HAL_GetTick();
-    while (!echo_capture_complete) {
+    while (!echo_capture_complete_1) {
+      if (HAL_GetTick() - start_time > 100) { // 100ms timeout
+        break;
+      }
+    }
+    // get distance
+    uint32_t measured_distance = 0;
+    if (USS_Read_1(&measured_distance)) {
+      distance_buffer_1[distance_buffer_index_1] = measured_distance;
+      distance_buffer_index_1 = (distance_buffer_index_1 + 1) > 2 ? 0 : distance_buffer_index_1 + 1;
+      current_distance_M = (distance_buffer_1[0] + distance_buffer_1[1] + distance_buffer_1[2]) / 3;
+      // sprintf(print_buffer, "USS_1: %lu cm\r\n", current_distance_1);
+      // print_msg(print_buffer);
+    } else {
+      print_msg("USS_1 fail\r\n");
+      HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
+    }
+
+    //trigger measurement for USS 2
+    USS_Trigger_2();
+    //wait for echo with timeout
+    start_time = HAL_GetTick();
+    while (!echo_capture_complete_2) {
       if (HAL_GetTick() - start_time > 100) { // 100ms timeout
         break;
       }
     }
     // Read distance
-    uint32_t measured_distance = 0;
-    if (USS_Read(&measured_distance)) {
-      distance_buffer[distance_buffer_index] = measured_distance;
-      distance_buffer_index = (distance_buffer_index + 1) > 2 ? 0 : distance_buffer_index + 1;
-      current_distance = (distance_buffer[0] + distance_buffer[1] + distance_buffer[2]) / 3;
-      // sprintf(print_buffer, "%lu cm\r\n", current_distance);
+    measured_distance = 0;
+    if (USS_Read_2(&measured_distance)) {
+      distance_buffer_2[distance_buffer_index_2] = measured_distance;
+      distance_buffer_index_2 = (distance_buffer_index_2 + 1) > 2 ? 0 : distance_buffer_index_2 + 1;
+      current_distance_L = (distance_buffer_2[0] + distance_buffer_2[1] + distance_buffer_2[2]) / 3;
+      // sprintf(print_buffer, "USS_2: %lu cm\r\n", current_distance_2);
       // print_msg(print_buffer);
     } else {
-      HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
+      print_msg("USS_2 fail\r\n");
+      HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, GPIO_PIN_SET);
     }
 
+    // trigger measurement for USS 3
+    USS_Trigger_3();
+    //wait for echo with timeout
+    start_time = HAL_GetTick();
+    while (!echo_capture_complete_3) {
+      if (HAL_GetTick() - start_time > 100) { // 100ms timeout
+        break;
+      }
+    }
+    // Read distance
+    measured_distance = 0;
+    if (USS_Read_3(&measured_distance)) {
+      distance_buffer_3[distance_buffer_index_3] = measured_distance;
+      distance_buffer_index_3 = (distance_buffer_index_3 + 1) > 2 ? 0 : distance_buffer_index_3 + 1;
+      current_distance_R = (distance_buffer_3[0] + distance_buffer_3[1] + distance_buffer_3[2]) / 3;
+      // sprintf(print_buffer, "USS_3: %lu cm\r\n", current_distance_3);
+      // print_msg(print_buffer);
+    } else {
+      print_msg("USS_3 fail\r\n");
+      HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
+    }
 
+    // print all distances
+    // sprintf(print_buffer, "L: %lu cm | F: %lu cm | R: %lu cm\r\n", current_distance_2, current_distance_1, current_distance_3);
+    // print_msg(print_buffer);
+
+    // send all distances over BLE1
+    char all_distances_buffer[70];
+    sprintf(all_distances_buffer, "USSF%luL%luR%lu\n", current_distance_M, current_distance_L, current_distance_R);
+    HAL_UART_Transmit(&huart6, (uint8_t *)all_distances_buffer, strlen(all_distances_buffer), 100);
+
+    // if jonahvinav, move forward until distance is less than 20cm detected
+    // by USS sensors
     if (jonahvinav) {
-      if (current_distance < 15) {
-        Motor_A_Control(0, 0);
-        Motor_B_Control(0, 0);
+      if (current_distance_M < MAX_DISTANCE || current_distance_L < MAX_DISTANCE || current_distance_R < MAX_DISTANCE) {
+        // CASE 1: all distances are less than MAX_DISTANCE
+        if (current_distance_M < MAX_DISTANCE && current_distance_L < MAX_DISTANCE && current_distance_R < MAX_DISTANCE) {
+          // determine the one with the furthest distance, then turn 90 degrees in that direction
+          if (current_distance_M > current_distance_L && current_distance_M > current_distance_R) {
+            if (stuck == 0) {
+              Motors_Turn(180);
+              stuck = 1;
+            } else {
+              Motors_Turn(-90);
+              stuck = 0;
+              // jonah (for recompile)
+            }
+          } else if (current_distance_L > current_distance_M && current_distance_L > current_distance_R) {
+            Motors_Turn(-90);
+          } else {
+            Motors_Turn(90);
+          }
+        } else {
+          // CASE 2: at least one of the distances is greater than MAX_DISTANCE
+          if (current_distance_R > MAX_DISTANCE) {
+            Motors_Turn(45);
+          } else if (current_distance_L > MAX_DISTANCE) {
+            Motors_Turn(-45);
+          }
+        }
+        HAL_Delay(400);
       } else {
+        stuck = 0;
         Motor_A_Control(1, 750);
         Motor_B_Control(1, 750);
       }
-    } else {
-      Motor_A_Control(0, 0);
-      Motor_B_Control(0, 0);
     }
+
+    // char response[50];
+    // // get RRSI from BLE 1
+    // if (ble1_connected) {
+    //   BLE_Get_RSSI(&huart6, response);
+    //   sprintf(print_buffer, "RSSI1 Response: %s\r\n", response);
+    //   print_msg(print_buffer);
+    // }
+
+    // // get RRSI from BLE 2
+    // if (ble2_connected) {
+    //   BLE_Get_RSSI(&huart2, response);
+    //   sprintf(print_buffer, "RSSI2 Response: %s\r\n", response);
+    //   print_msg(print_buffer);
+    // }
+
+    // // get RRSI from BLE 3
+    // if (ble3_connected) {
+    //   BLE_Get_RSSI(&huart4, response);
+    //   sprintf(print_buffer, "RSSI3 Response: %s\r\n", response);
+    //   print_msg(print_buffer);
+    // }
+
+    // get software version
+    // BLE_Send_AT_Command("RADD?", &huart6, response, 50);
+    // sprintf(print_buffer, "test: %s\r\n", response);
+    // print_msg(print_buffer);
+
     
     // Wait before next measurement
     HAL_Delay(20);
@@ -424,6 +559,122 @@ static void MX_TIM3_Init(void)
   /* USER CODE BEGIN TIM3_Init 2 */
 
   /* USER CODE END TIM3_Init 2 */
+
+}
+
+/**
+  * @brief TIM4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM4_Init(void)
+{
+
+  /* USER CODE BEGIN TIM4_Init 0 */
+
+  /* USER CODE END TIM4_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_IC_InitTypeDef sConfigIC = {0};
+
+  /* USER CODE BEGIN TIM4_Init 1 */
+
+  /* USER CODE END TIM4_Init 1 */
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 83;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 65535;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_IC_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
+  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
+  sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
+  sConfigIC.ICFilter = 0;
+  if (HAL_TIM_IC_ConfigChannel(&htim4, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM4_Init 2 */
+
+  /* USER CODE END TIM4_Init 2 */
+
+}
+
+/**
+  * @brief TIM5 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM5_Init(void)
+{
+
+  /* USER CODE BEGIN TIM5_Init 0 */
+
+  /* USER CODE END TIM5_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_IC_InitTypeDef sConfigIC = {0};
+
+  /* USER CODE BEGIN TIM5_Init 1 */
+
+  /* USER CODE END TIM5_Init 1 */
+  htim5.Instance = TIM5;
+  htim5.Init.Prescaler = 83;
+  htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim5.Init.Period = 65535;
+  htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim5.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim5) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim5, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_IC_Init(&htim5) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim5, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
+  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
+  sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
+  sConfigIC.ICFilter = 0;
+  if (HAL_TIM_IC_ConfigChannel(&htim5, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM5_Init 2 */
+
+  /* USER CODE END TIM5_Init 2 */
 
 }
 
@@ -623,7 +874,10 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOF, USS_1_TRIG_Pin|MOTOR_B_IN1_Pin|MOTOR_A_IN2_Pin|MOTOR_B_IN2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(MOTOR_A_IN1_GPIO_Port, MOTOR_A_IN1_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOE, MOTOR_A_IN1_Pin|USS_3_TRIG_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(USS_2_TRIG_GPIO_Port, USS_2_TRIG_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(USB_PowerSwitchOn_GPIO_Port, USB_PowerSwitchOn_Pin, GPIO_PIN_RESET);
@@ -648,12 +902,19 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOF, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : MOTOR_A_IN1_Pin */
-  GPIO_InitStruct.Pin = MOTOR_A_IN1_Pin;
+  /*Configure GPIO pins : MOTOR_A_IN1_Pin USS_3_TRIG_Pin */
+  GPIO_InitStruct.Pin = MOTOR_A_IN1_Pin|USS_3_TRIG_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(MOTOR_A_IN1_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : USS_2_TRIG_Pin */
+  GPIO_InitStruct.Pin = USS_2_TRIG_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(USS_2_TRIG_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : USB_PowerSwitchOn_Pin */
   GPIO_InitStruct.Pin = USB_PowerSwitchOn_Pin;
@@ -729,14 +990,24 @@ void Motor_B_Control(int8_t direction, int16_t speed) {
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, speed);
 }
 
-void Motors_Turn(uint16_t direction) {
-  uint16_t time = 80 / 36 * direction;;
+void Motors_Turn(int16_t direction) {
 
-  Motor_A_Control(-1, 1000);
-  Motor_B_Control(1, 1000);
-  HAL_Delay(time);
-  Motor_A_Control(0, 0);
-  Motor_B_Control(0, 0);
+
+  uint16_t time = 80 / 36 * abs(direction);
+  
+  if (direction < 0) {
+    Motor_A_Control(1, 1000);
+    Motor_B_Control(-1, 1000);
+    HAL_Delay(time);
+    Motor_A_Control(0, 0);
+    Motor_B_Control(0, 0);
+  } else if (direction > 0) {
+    Motor_A_Control(-1, 1000);
+    Motor_B_Control(1, 1000);
+    HAL_Delay(time);
+    Motor_A_Control(0, 0);
+    Motor_B_Control(0, 0);
+  }
 }
 
 void Motor_PWM_Test(void) {
@@ -869,6 +1140,55 @@ void BLE_Send_AT_Command(char *msg, UART_HandleTypeDef *huart, char* response, u
   HAL_UART_Receive_IT(huart, &ble1_rx_data, 1);
 }
 
+void BLE_Get_RSSI(UART_HandleTypeDef *huart, char* response) {
+
+  // abort reception
+  HAL_UART_AbortReceive_IT(huart);
+
+  char cmd[] = "AT+RSSI?";
+  memset(response, 0, 50);
+  
+  current_HAL_status = HAL_UART_Transmit(huart, (uint8_t *)cmd, strlen(cmd), 500); 
+  if (current_HAL_status != HAL_OK) {
+    print_msg("Transmit error\r\n");
+
+    current_error = BLE_AT_HANDSHAKE_ERROR;
+    Error_Handler();
+  }
+
+  // receive response
+  uint8_t string_length = 0;
+  current_HAL_status = HAL_OK;
+  char b[1];
+  do {
+    current_HAL_status = HAL_UART_Receive(huart, (uint8_t*)b, 1, 2000);
+    if (current_HAL_status == HAL_OK) {
+      response[string_length++] = *b;
+    } else if (current_HAL_status == HAL_TIMEOUT) {
+      break;
+    } else {
+      current_error = BLE_AT_HANDSHAKE_ERROR;
+      print_msg("Receive error\r\n");
+      Error_Handler();
+    }
+  } while (current_HAL_status == HAL_OK);
+
+  // add null terminator
+  response[string_length] = '\0';
+
+  // get which rx buffer to use
+  uint8_t *pData = 0;
+  if (huart->Instance == USART6)
+    pData = &ble1_rx_data;
+  else if (huart->Instance == USART2)
+    pData = &ble2_rx_data;
+  else if (huart->Instance == UART4)
+    pData = &ble3_rx_data;
+
+  // restart reception
+  HAL_UART_Receive_IT(huart, pData, 1);
+}
+
 void BLE_Send_Handshake(UART_HandleTypeDef *huart, char* response) {
   char cmd[] = "AT";
   // uint16_t received_length;
@@ -948,9 +1268,10 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   }
 }
 
-void BLE_InitConfigure(void) {
-  //bluetooth handshake:
+void  BLE_InitConfigure(void) {
   char response[50];
+
+  /*=========== BLE1 Config ===========*/
   BLE_Send_Handshake(&huart6, response);
   sprintf(print_buffer, "HANDSHAKE: %s\r\n", response);
   print_msg(print_buffer);
@@ -958,13 +1279,15 @@ void BLE_InitConfigure(void) {
     print_msg("Disconnected from previous connection\r\n");
     HAL_Delay(500);
   }
-
-  // print address, passkey
+  // print address, passkey, UUID
   BLE_Send_AT_Command("ADDR?", &huart6, response, 50);
   sprintf(print_buffer, "ADDR: %s\r\n", response);
   print_msg(print_buffer);
   BLE_Send_AT_Command("PASS?", &huart6, response, 50);
   sprintf(print_buffer, "PASS: %s\r\n", response);
+  print_msg(print_buffer);
+  BLE_Send_AT_Command("UUID?", &huart6, response, 50);
+  sprintf(print_buffer, "UUID: %s\r\n", response);
   print_msg(print_buffer);
 
   // set name
@@ -985,41 +1308,204 @@ void BLE_InitConfigure(void) {
   sprintf(print_buffer, "ADVI: %s\r\n", response);
   print_msg(print_buffer);
 
+  //set mode
+  BLE_Send_AT_Command("MODE2", &huart6, response, 50);
+  sprintf(print_buffer, "MODE: %s\r\n", response);
+  print_msg(print_buffer);
+
   // query mode
   BLE_Send_AT_Command("MODE?", &huart6, response, 50);
   sprintf(print_buffer, "MODE: %s\r\n", response);
   print_msg(print_buffer);
+
+  // set ibeacon
+  BLE_Send_AT_Command("IBEA1", &huart6, response, 50);
+  sprintf(print_buffer, "IBEA: %s\r\n", response);
+  print_msg(print_buffer);
+
+  // reset module
+  BLE_Send_AT_Command("RESET", &huart6, response, 50);
+  sprintf(print_buffer, "RESET: %s\r\n", response);
+  print_msg(print_buffer);
+
+  HAL_Delay(500);
+
+  // verify ibeacon
+  BLE_Send_AT_Command("IBEA?", &huart6, response, 50);
+  sprintf(print_buffer, "IBEA: %s\r\n", response);
+  print_msg(print_buffer);
+
+  /*=========== BLE2 Config ===========*/
+  BLE_Send_Handshake(&huart2, response);
+  sprintf(print_buffer, "HANDSHAKE: %s\r\n", response);
+  print_msg(print_buffer);
+  if (strcmp(response, "OK+LOST\r\n") == 0) {
+    print_msg("Disconnected from previous connection\r\n");
+    HAL_Delay(500);
+  }
+  // print address, passkey, uuid
+  BLE_Send_AT_Command("ADDR?", &huart2, response, 50);
+  sprintf(print_buffer, "ADDR: %s\r\n", response);
+  print_msg(print_buffer);
+  BLE_Send_AT_Command("PASS?", &huart2, response, 50);
+  sprintf(print_buffer, "PASS: %s\r\n", response);
+  print_msg(print_buffer);
+  BLE_Send_AT_Command("UUID?", &huart2, response, 50);
+  sprintf(print_buffer, "UUID: %s\r\n", response);
+  print_msg(print_buffer);
+
+  // set name
+  BLE_Send_AT_Command("NAMEstummon_ble_2", &huart2, response, 50);
+  sprintf(print_buffer, "NAME: %s\r\n", response);
+  print_msg(print_buffer);
+
+  // set slave
+  BLE_Send_AT_Command("ROLE0", &huart2, response, 50);
+  sprintf(print_buffer, "ROLE: %s\r\n", response);
+  print_msg(print_buffer);
+
+  // wait for reboot
+  HAL_Delay(500);
+
+  // set advi
+  BLE_Send_AT_Command("ADVI0", &huart2, response, 50);
+  sprintf(print_buffer, "ADVI: %s\r\n", response);
+  print_msg(print_buffer);
+
+  // query mode
+  BLE_Send_AT_Command("MODE?", &huart2, response, 50);
+  sprintf(print_buffer, "MODE: %s\r\n", response);
+  print_msg(print_buffer);
+
+  /*=========== BLE3 Config ===========*/
+  BLE_Send_Handshake(&huart4, response);
+  sprintf(print_buffer, "HANDSHAKE: %s\r\n", response);
+  print_msg(print_buffer);
+  if (strcmp(response, "OK+LOST\r\n") == 0) {
+    print_msg("Disconnected from previous connection\r\n");
+    HAL_Delay(500);
+  }
+
+  // print address, passkey, uuid
+  BLE_Send_AT_Command("ADDR?", &huart4, response, 50);
+  sprintf(print_buffer, "ADDR: %s\r\n", response);
+  print_msg(print_buffer);
+  BLE_Send_AT_Command("PASS?", &huart4, response, 50);
+  sprintf(print_buffer, "PASS: %s\r\n", response);
+  print_msg(print_buffer);
+  BLE_Send_AT_Command("UUID?", &huart4, response, 50);
+  sprintf(print_buffer, "UUID: %s\r\n", response);
+  print_msg(print_buffer);
+
+  // set name
+  BLE_Send_AT_Command("NAMEstummon_ble_3", &huart4, response, 50);
+  sprintf(print_buffer, "NAME: %s\r\n", response);
+  print_msg(print_buffer);
+
+  // set slave
+  BLE_Send_AT_Command("ROLE0", &huart4, response, 50);
+  sprintf(print_buffer, "ROLE: %s\r\n", response);
+  print_msg(print_buffer);
+
+  // wait for reboot
+  HAL_Delay(500);
+
+  // set advi
+  BLE_Send_AT_Command("ADVI0", &huart4, response, 50);
+  sprintf(print_buffer, "ADVI: %s\r\n", response);
+  print_msg(print_buffer);
+
+  // query mode
+  BLE_Send_AT_Command("MODE?", &huart4, response, 50);
+  sprintf(print_buffer, "MODE: %s\r\n", response);
+  print_msg(print_buffer);
+
+
+  print_msg("\r\nINITIALIZED BLE MODULES\r\n");
 }
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-  if (huart != &huart6)
-    return;
+  if (huart->Instance == USART6) { //BLE 1   (master BLE)
+    // Put byte in buffer and increment write position
+    ble1_rx_buffer[ble1_rx_write_pos++] = ble1_rx_data;
+    ble1_rx_buffer[ble1_rx_write_pos] = '\0'; // Null-terminate
 
-  // Put byte in buffer and increment write position
-  ble1_rx_buffer[ble1_rx_write_pos++] = ble1_rx_data;
-  ble1_rx_buffer[ble1_rx_write_pos] = '\0'; // Null-terminate
+    // Check for connection messages with proper line endings
+    if (strstr(ble1_rx_buffer, "OK+CONN") != NULL) {
+      ble1_connected = 1;
+      print_msg("Connected\r\n");
+      ble1_rx_write_pos = 0; // Reset buffer
+      ble1_rx_buffer[0] = '\0';
+    } 
+    else if (strstr(ble1_rx_buffer, "OK+LOST") != NULL) {
+      ble1_connected = 0;
+      print_msg("Disconnected\r\n");
+      ble1_rx_write_pos = 0; // Reset buffer
+      ble1_rx_buffer[0] = '\0';
+    }
 
-  // Check for connection messages with proper line endings
-  if (strstr(ble1_rx_buffer, "OK+CONN") != NULL) {
-    ble1_connected = 1;
-    print_msg("Connected\r\n");
-    ble1_rx_write_pos = 0; // Reset buffer
-    ble1_rx_buffer[0] = '\0';
-  } 
-  else if (strstr(ble1_rx_buffer, "OK+LOST") != NULL) {
-    ble1_connected = 0;
-    print_msg("Disconnected\r\n");
-    ble1_rx_write_pos = 0; // Reset buffer
-    ble1_rx_buffer[0] = '\0';
+    // Safety check - if buffer is getting too full, reset it
+    if (ble1_rx_write_pos >= BLE_RX_BUFFER_SIZE - 2) {
+      ble1_rx_write_pos = 0;
+      ble1_rx_buffer[0] = '\0';
+    }
+
+    // Restart the interrupt reception
+    HAL_UART_Receive_IT(&huart6, &ble1_rx_data, 1);
+  } else if (huart->Instance == USART2) { /// BLE 2
+    // Put byte in buffer and increment write position
+    ble2_rx_buffer[ble2_rx_write_pos++] = ble2_rx_data;
+    ble2_rx_buffer[ble2_rx_write_pos] = '\0'; // Null-terminate
+
+    // Check for connection messages with proper line endings
+    if (strstr(ble2_rx_buffer, "OK+CONN") != NULL) {
+      ble2_connected = 1;
+      print_msg("Connected\r\n");
+      ble2_rx_write_pos = 0; // Reset buffer
+      ble2_rx_buffer[0] = '\0';
+    } 
+    else if (strstr(ble2_rx_buffer, "OK+LOST") != NULL) {
+      ble2_connected = 0;
+      print_msg("Disconnected\r\n");
+      ble2_rx_write_pos = 0; // Reset buffer
+      ble2_rx_buffer[0] = '\0';
+    }
+
+    // Safety check - if buffer is getting too full, reset it
+    if (ble2_rx_write_pos >= BLE_RX_BUFFER_SIZE - 2) {
+      ble2_rx_write_pos = 0;
+      ble2_rx_buffer[0] = '\0';
+    }
+
+    // Restart the interrupt reception
+    HAL_UART_Receive_IT(&huart2, &ble2_rx_data, 1);
+  } else if (huart->Instance == UART4) { // BLE 3
+    // Put byte in buffer and increment write position
+    ble3_rx_buffer[ble3_rx_write_pos++] = ble3_rx_data;
+    ble3_rx_buffer[ble3_rx_write_pos] = '\0'; // Null-terminate
+
+    // Check for connection messages with proper line endings
+    if (strstr(ble3_rx_buffer, "OK+CONN") != NULL) {
+      ble3_connected = 1;
+      print_msg("Connected\r\n");
+      ble3_rx_write_pos = 0; // Reset buffer
+      ble3_rx_buffer[0] = '\0';
+    } 
+    else if (strstr(ble3_rx_buffer, "OK+LOST") != NULL) {
+      ble3_connected = 0;
+      print_msg("Disconnected\r\n");
+      ble3_rx_write_pos = 0; // Reset buffer
+      ble3_rx_buffer[0] = '\0';
+    }
+
+    // Safety check - if buffer is getting too full, reset it
+    if (ble3_rx_write_pos >= BLE_RX_BUFFER_SIZE - 2) {
+      ble3_rx_write_pos = 0;
+      ble3_rx_buffer[0] = '\0';
+    }
+
+    // Restart the interrupt reception
+    HAL_UART_Receive_IT(&huart4, &ble3_rx_data, 1);
   }
-
-  // Safety check - if buffer is getting too full, reset it
-  if (ble1_rx_write_pos >= BLE_UART6_RX_BUFFER_SIZE - 2) {
-    ble1_rx_write_pos = 0;
-    ble1_rx_buffer[0] = '\0';
-  }
-
-  // Restart the interrupt reception
-  HAL_UART_Receive_IT(&huart6, &ble1_rx_data, 1);
 }
 
 void BLE_Process_Data(uint8_t ble_num) {
@@ -1061,7 +1547,7 @@ void BLE_Process_Data(uint8_t ble_num) {
             break;
           }
         }
-        uint16_t direction = atoi(direction_buffer);
+        int16_t direction = atoi(direction_buffer);
         Motors_Turn(direction);
       } else if (strstr(ble1_rx_buffer, "GO") != NULL) {
         jonahvinav = 1;
@@ -1078,33 +1564,109 @@ void USS_Delay_us(uint16_t us){
   __HAL_TIM_SET_COUNTER(&htim3, 0);
   while (__HAL_TIM_GET_COUNTER(&htim3) < us);
 }
-void USS_Init(void){
+void USS_Init_1(void){
   // Start the timer base
   HAL_TIM_Base_Start(&htim3);
   
   // Start input capture in interrupt mode
   HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_1);
 }
-void USS_Trigger(void){
+void USS_Init_2(void){
+  // Start the timer base
+  HAL_TIM_Base_Start(&htim4);
+  
+  // Start input capture in interrupt mode
+  HAL_TIM_IC_Start_IT(&htim4, TIM_CHANNEL_1);
+}
+void USS_Init_3(void){
+  // Start the timer base
+  HAL_TIM_Base_Start(&htim5);
+  
+  // Start input capture in interrupt mode
+  HAL_TIM_IC_Start_IT(&htim5, TIM_CHANNEL_1);
+}
+
+void USS_Trigger_1(void){
   // Reset capture complete flag
-  echo_capture_complete = 0;
+  echo_capture_complete_1 = 0;
   
   // Generate 10us pulse on TRIG pin
   HAL_GPIO_WritePin(USS_1_TRIG_GPIO_Port, USS_1_TRIG_Pin, GPIO_PIN_SET);
   USS_Delay_us(10);
   HAL_GPIO_WritePin(USS_1_TRIG_GPIO_Port, USS_1_TRIG_Pin, GPIO_PIN_RESET);
 }
-uint8_t USS_Read(uint32_t* distance){
-  if (!echo_capture_complete)
+void USS_Trigger_2(void){
+  // Reset capture complete flag
+  echo_capture_complete_2 = 0;
+  
+  // Generate 10us pulse on TRIG pin
+  HAL_GPIO_WritePin(USS_2_TRIG_GPIO_Port, USS_2_TRIG_Pin, GPIO_PIN_SET);
+  USS_Delay_us(10);
+  HAL_GPIO_WritePin(USS_2_TRIG_GPIO_Port, USS_2_TRIG_Pin, GPIO_PIN_RESET);
+}
+void USS_Trigger_3(void){
+  // Reset capture complete flag
+  echo_capture_complete_3 = 0;
+  
+  // Generate 10us pulse on TRIG pin
+  HAL_GPIO_WritePin(USS_3_TRIG_GPIO_Port, USS_3_TRIG_Pin, GPIO_PIN_SET);
+  USS_Delay_us(10);
+  HAL_GPIO_WritePin(USS_3_TRIG_GPIO_Port, USS_3_TRIG_Pin, GPIO_PIN_RESET);
+}
+
+uint8_t USS_Read_1(uint32_t* distance) {
+  if (!echo_capture_complete_1)
     return 0;
     
   // Calculate pulse width
   uint32_t pulse_width;
-  if (echo_fall_time > echo_rise_time) {
-    pulse_width = echo_fall_time - echo_rise_time;
+  if (echo_fall_time_1 > echo_rise_time_1) {
+    pulse_width = echo_fall_time_1 - echo_rise_time_1;
   } else {
     // Handle timer overflow
-    pulse_width = ((0xFFFF - echo_rise_time) + echo_fall_time + 1);
+    pulse_width = ((0xFFFF - echo_rise_time_1) + echo_fall_time_1 + 1);
+  }
+  
+  // Calculate distance: d = (t × 343 m/s) ÷ 2
+  // For cm: d = (t(μs) × 0.0343 cm/μs) ÷ 2 = t × 0.01715
+  // Simplified with integer math: d = t × 343 ÷ 20000
+  *distance = (pulse_width * 343) / 20000;
+  
+  return 1;
+}
+
+uint8_t USS_Read_2(uint32_t* distance) {
+  if (!echo_capture_complete_2)
+    return 0;
+    
+  // Calculate pulse width
+  uint32_t pulse_width;
+  if (echo_fall_time_2 > echo_rise_time_2) {
+    pulse_width = echo_fall_time_2 - echo_rise_time_2;
+  } else {
+    // Handle timer overflow
+    pulse_width = ((0xFFFF - echo_rise_time_2) + echo_fall_time_2 + 1);
+  }
+  
+  // Calculate distance: d = (t × 343 m/s) ÷ 2
+  // For cm: d = (t(μs) × 0.0343 cm/μs) ÷ 2 = t × 0.01715
+  // Simplified with integer math: d = t × 343 ÷ 20000
+  *distance = (pulse_width * 343) / 20000;
+  
+  return 1;
+}
+
+uint8_t USS_Read_3(uint32_t* distance) {
+  if (!echo_capture_complete_3)
+    return 0;
+    
+  // Calculate pulse width
+  uint32_t pulse_width;
+  if (echo_fall_time_3 > echo_rise_time_3) {
+    pulse_width = echo_fall_time_3 - echo_rise_time_3;
+  } else {
+    // Handle timer overflow
+    pulse_width = ((0xFFFF - echo_rise_time_3) + echo_fall_time_3 + 1);
   }
   
   // Calculate distance: d = (t × 343 m/s) ÷ 2
@@ -1120,15 +1682,41 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
   if (htim->Instance == TIM3 && htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1) {
     if (HAL_GPIO_ReadPin(USS_1_ECHO_GPIO_Port, USS_1_ECHO_Pin) == GPIO_PIN_SET) {
       // Rising edge detected
-      echo_rise_time = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+      echo_rise_time_1 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
       // Change polarity to capture falling edge
       __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_FALLING);
     } else {
       // Falling edge detected
-      echo_fall_time = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+      echo_fall_time_1 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
       // Change back to capture rising edge
       __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_RISING);
-      echo_capture_complete = 1;
+      echo_capture_complete_1 = 1;
+    }
+  } else if (htim->Instance == TIM4 && htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1) {
+    if (HAL_GPIO_ReadPin(USS_2_ECHO_GPIO_Port, USS_2_ECHO_Pin) == GPIO_PIN_SET) {
+      // Rising edge detected
+      echo_rise_time_2 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+      // Change polarity to capture falling edge
+      __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_FALLING);
+    } else {
+      // Falling edge detected
+      echo_fall_time_2 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+      // Change back to capture rising edge
+      __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_RISING);
+      echo_capture_complete_2 = 1;
+    }
+  } else if (htim->Instance == TIM5 && htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1) {
+    if (HAL_GPIO_ReadPin(USS_3_ECHO_GPIO_Port, USS_3_ECHO_Pin) == GPIO_PIN_SET) {
+      // Rising edge detected
+      echo_rise_time_3 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+      // Change polarity to capture falling edge
+      __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_FALLING);
+    } else {
+      // Falling edge detected
+      echo_fall_time_3 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+      // Change back to capture rising edge
+      __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_RISING);
+      echo_capture_complete_3 = 1;
     }
   }
 }
