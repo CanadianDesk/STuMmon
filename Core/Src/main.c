@@ -20,6 +20,7 @@
 #include "main.h"
 #include "stm32f446xx.h"
 #include "stm32f4xx_hal.h"
+#include "stm32f4xx_hal_gpio.h"
 #include "stm32f4xx_hal_uart.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -49,7 +50,13 @@
 #define TIM_INIT_ERROR 5
 
 #define BLE_RX_BUFFER_SIZE 256
+#define RSSI_BUFFER_SIZE 2
+#define MAX_RSSI_INTERVAL_COUNTER 100
 #define MAX_DISTANCE 40
+#define MAX_STOP_CUE_INTERVAL_COUNTER 100
+
+#define NEW_RSSI_INDEX 0 
+#define OLD_RSSI_INDEX 1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -118,6 +125,11 @@ uint32_t current_distance_R = 0;
 
 uint8_t jonahvinav = 0;
 uint8_t stuck = 0;
+uint8_t dont_180_again = 0;
+uint8_t RSSI_buffer[RSSI_BUFFER_SIZE];
+uint8_t RSSI_buffer_index = 0;
+uint16_t RSSI_interval_counter = 0;
+uint16_t stop_cue_interval_counter = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -138,7 +150,7 @@ void BLE_Send_Handshake(UART_HandleTypeDef *huart, char* response);
 uint8_t BLE_Wake_From_Sleep(UART_HandleTypeDef *huart, char* response);
 void BLE_InitConfigure(void);  
 void BLE_Process_Data(uint8_t ble_num);
-void BLE_Get_RSSI(UART_HandleTypeDef *huart, char* response);
+void BLE_Get_RSSI(UART_HandleTypeDef *huart, uint8_t* rssi_ptr, uint8_t update_buffer);
 
 void print_msg(char *msg);
 
@@ -210,8 +222,11 @@ int main(void)
   BLE_InitConfigure();
 
   // Initialize HC-SR04
+  // print_msg("Initializing USS1\r\n");
   USS_Init_1();
+  // print_msg("Initializing USS2\r\n");
   USS_Init_2();
+  // print_msg("Initializing USS3\r\n");
   USS_Init_3();
   
 
@@ -224,11 +239,25 @@ int main(void)
   // HAL_GPIO_WritePin(USS_1_TRIG_GPIO_Port, USS_1_TRIG_Pin, GPIO_PIN_RESET);
   // Motors_Turn(0);
 
+  HAL_Delay(5000);
+  uint8_t rssi_response;
+  BLE_Get_RSSI(&huart6, &rssi_response, 1);
+  RSSI_buffer[OLD_RSSI_INDEX] = RSSI_buffer[NEW_RSSI_INDEX];
+  // sprintf(print_buffer, "RSSI Buffer after Get_RSSI function: [%u, %u]\r\n", RSSI_buffer[0], RSSI_buffer[1]);
+  // print_msg(print_buffer);
+  // RSSI_buffer[RSSI_buffer_index] = RSSI_buffer[RSSI_buffer_index - 1 == -1 ? RSSI_BUFFER_SIZE - 1 : RSSI_buffer_index - 1];
+  // sprintf(print_buffer, "RSSI Buffer after equaling: [%u, %u]\r\n", RSSI_buffer[0], RSSI_buffer[1]);
+  // print_msg(print_buffer);
+  // sprintf(print_buffer, "Initial RSSI: %u\r\n", RSSI_buffer[RSSI_buffer_index]);
+  // print_msg(print_buffer);
+
   while (1)
   {
     BLE_Process_Data(1);
 
+
     //trigger measurement for USS 1
+    // print_msg("triggering 1\r\n");
     USS_Trigger_1();
     //wait for echo with timeout
     uint32_t start_time = HAL_GetTick();
@@ -245,12 +274,14 @@ int main(void)
       current_distance_M = (distance_buffer_1[0] + distance_buffer_1[1] + distance_buffer_1[2]) / 3;
       // sprintf(print_buffer, "USS_1: %lu cm\r\n", current_distance_1);
       // print_msg(print_buffer);
+      HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
     } else {
       print_msg("USS_1 fail\r\n");
       HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
     }
 
     //trigger measurement for USS 2
+    // print_msg("triggering 2\r\n");
     USS_Trigger_2();
     //wait for echo with timeout
     start_time = HAL_GetTick();
@@ -267,12 +298,14 @@ int main(void)
       current_distance_L = (distance_buffer_2[0] + distance_buffer_2[1] + distance_buffer_2[2]) / 3;
       // sprintf(print_buffer, "USS_2: %lu cm\r\n", current_distance_2);
       // print_msg(print_buffer);
+      HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, GPIO_PIN_RESET);
     } else {
       print_msg("USS_2 fail\r\n");
       HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, GPIO_PIN_SET);
     }
 
     // trigger measurement for USS 3
+    // print_msg("triggering 3\r\n");
     USS_Trigger_3();
     //wait for echo with timeout
     start_time = HAL_GetTick();
@@ -289,6 +322,7 @@ int main(void)
       current_distance_R = (distance_buffer_3[0] + distance_buffer_3[1] + distance_buffer_3[2]) / 3;
       // sprintf(print_buffer, "USS_3: %lu cm\r\n", current_distance_3);
       // print_msg(print_buffer);
+      HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
     } else {
       print_msg("USS_3 fail\r\n");
       HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
@@ -301,6 +335,7 @@ int main(void)
     // send all distances over BLE1
     char all_distances_buffer[70];
     sprintf(all_distances_buffer, "USSF%luL%luR%lu\n", current_distance_M, current_distance_L, current_distance_R);
+    // print_msg("sending\r\n");
     HAL_UART_Transmit(&huart6, (uint8_t *)all_distances_buffer, strlen(all_distances_buffer), 100);
 
     // if jonahvinav, move forward until distance is less than 20cm detected
@@ -330,14 +365,70 @@ int main(void)
             Motors_Turn(45);
           } else if (current_distance_L > MAX_DISTANCE) {
             Motors_Turn(-45);
+          } else {
+            Motors_Turn(180);
           }
         }
         HAL_Delay(400);
       } else {
         stuck = 0;
-        Motor_A_Control(1, 750);
-        Motor_B_Control(1, 750);
+
+        // IF RSSI IS INCREASING
+        if (RSSI_buffer[NEW_RSSI_INDEX] > RSSI_buffer[OLD_RSSI_INDEX] + 1) {
+          HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, GPIO_PIN_SET);
+          HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
+          HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
+
+          if (dont_180_again == 1) {
+            Motors_Turn(-90);
+            dont_180_again = 0;
+          } else {
+            Motors_Turn(180);
+            dont_180_again = 1;
+          }
+
+          HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, GPIO_PIN_RESET);
+          HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+          HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
+        } else {
+          Motor_A_Control(1, 750);
+          Motor_B_Control(1, 750);
+        }
       }
+    }
+
+    
+    if (RSSI_interval_counter == MAX_RSSI_INTERVAL_COUNTER) {
+      print_msg("get rssi\r\n");
+      // get RRSI
+      uint8_t rssi_response;
+      BLE_Get_RSSI(&huart6, &rssi_response, 1);
+      RSSI_interval_counter = 0;
+      // if (RSSI_buffer[NEW_RSSI_INDEX] < 61) {
+      //   jonahvinav = 0;
+      //   Motor_A_Control(0, 0);
+      //   Motor_B_Control(0, 0);
+      // }
+    } else {
+      if (RSSI_interval_counter == 0) {
+        RSSI_buffer[OLD_RSSI_INDEX] = RSSI_buffer[NEW_RSSI_INDEX];
+      }
+      RSSI_interval_counter++;
+    }
+
+    if (stop_cue_interval_counter == MAX_STOP_CUE_INTERVAL_COUNTER) {
+      uint8_t rssi_value;
+      BLE_Get_RSSI(&huart6, &rssi_value, 0);
+
+      if (rssi_value < 61) {
+        jonahvinav = 0;
+        Motor_A_Control(0, 0);
+        Motor_B_Control(0, 0);
+      }      
+
+      stop_cue_interval_counter = 0;
+    } else {
+      stop_cue_interval_counter++;
     }
 
     // char response[50];
@@ -369,7 +460,7 @@ int main(void)
 
     
     // Wait before next measurement
-    HAL_Delay(20);
+    // HAL_Delay(20);
 
     /* USER CODE END WHILE */
 
@@ -1140,53 +1231,97 @@ void BLE_Send_AT_Command(char *msg, UART_HandleTypeDef *huart, char* response, u
   HAL_UART_Receive_IT(huart, &ble1_rx_data, 1);
 }
 
-void BLE_Get_RSSI(UART_HandleTypeDef *huart, char* response) {
-
+void BLE_Get_RSSI(UART_HandleTypeDef *huart, uint8_t* rssi_ptr, uint8_t update_buffer) {
   // abort reception
   HAL_UART_AbortReceive_IT(huart);
 
+  char response[50];
   char cmd[] = "AT+RSSI?";
   memset(response, 0, 50);
-  
-  current_HAL_status = HAL_UART_Transmit(huart, (uint8_t *)cmd, strlen(cmd), 500); 
-  if (current_HAL_status != HAL_OK) {
-    print_msg("Transmit error\r\n");
 
-    current_error = BLE_AT_HANDSHAKE_ERROR;
+  //transmit command
+  current_HAL_status = HAL_UART_Transmit(huart, (uint8_t *)cmd, strlen(cmd), 35);
+  if (current_HAL_status != HAL_OK) {
+    print_msg("Transmit error\r\n"); 
+    current_error = BLE_AT_COMMAND_ERROR;
     Error_Handler();
   }
 
-  // receive response
+  //receive response
   uint8_t string_length = 0;
   current_HAL_status = HAL_OK;
   char b[1];
   do {
-    current_HAL_status = HAL_UART_Receive(huart, (uint8_t*)b, 1, 2000);
+    current_HAL_status = HAL_UART_Receive(huart, (uint8_t*)b, 1, 300);
     if (current_HAL_status == HAL_OK) {
       response[string_length++] = *b;
     } else if (current_HAL_status == HAL_TIMEOUT) {
       break;
     } else {
-      current_error = BLE_AT_HANDSHAKE_ERROR;
-      print_msg("Receive error\r\n");
+      current_error = BLE_AT_COMMAND_ERROR;
       Error_Handler();
     }
   } while (current_HAL_status == HAL_OK);
 
-  // add null terminator
   response[string_length] = '\0';
 
-  // get which rx buffer to use
-  uint8_t *pData = 0;
-  if (huart->Instance == USART6)
-    pData = &ble1_rx_data;
-  else if (huart->Instance == USART2)
-    pData = &ble2_rx_data;
-  else if (huart->Instance == UART4)
-    pData = &ble3_rx_data;
+  // sprintf(print_buffer, "RSSI response: %s\r\n", response);
+  // print_msg(print_buffer);
 
   // restart reception
-  HAL_UART_Receive_IT(huart, pData, 1);
+  HAL_UART_Receive_IT(huart, &ble1_rx_data, 1);
+
+  if (strstr(response, "RSSI:") == NULL) {
+    print_msg("RSSI response is weird\r\n");
+    print_msg(response);
+    HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
+  }
+
+  uint8_t current_index = 5;
+  char rssi1[4];
+  char rssi2[4];
+  char rssi3[4];
+  uint8_t rssi1_length = 0;
+  uint8_t rssi2_length = 0;
+  uint8_t rssi3_length = 0;
+
+
+  while (response[current_index] != '|') {
+    rssi1[rssi1_length++] = response[current_index++];
+  }
+  current_index++;
+  while (response[current_index] != '|') {
+    rssi2[rssi2_length++] = response[current_index++];
+  }
+  current_index++;
+  while (response[current_index] != '\n') {
+    rssi3[rssi3_length++] = response[current_index++];
+  }
+
+  rssi1[rssi1_length] = '\0';
+  rssi2[rssi2_length] = '\0';
+  rssi3[rssi3_length] = '\0';
+
+  // sprintf(print_buffer, "RSSI1: %s, RSSI2: %s, RSSI3: %s\r\n", rssi1, rssi2, rssi3);
+  // print_msg(print_buffer);
+
+  uint8_t rssi1_value = atoi(rssi1);
+  uint8_t rssi2_value = atoi(rssi2);
+  uint8_t rssi3_value = atoi(rssi3);
+
+  uint8_t avg_rssi = (rssi1_value + rssi2_value + rssi3_value) / 3;
+  // sprintf(print_buffer, "RSSI: %u\r\n", avg_rssi);
+  // print_msg(print_buffer);
+  // RSSI_buffer[RSSI_buffer_index] = avg_rssi;
+  // RSSI_buffer_index = RSSI_buffer_index + 1 == RSSI_BUFFER_SIZE ? 0 : RSSI_buffer_index + 1;
+  if (update_buffer == 1) {
+    RSSI_buffer[OLD_RSSI_INDEX] = RSSI_buffer[NEW_RSSI_INDEX];
+    RSSI_buffer[NEW_RSSI_INDEX] = avg_rssi;
+  }
+  *rssi_ptr = avg_rssi;
+  // sprintf(print_buffer, "RSSI Buffer in Get_RSSI function: [%u, %u]\r\n", RSSI_buffer[0], RSSI_buffer[1]);
+  // print_msg(print_buffer);
 }
 
 void BLE_Send_Handshake(UART_HandleTypeDef *huart, char* response) {
