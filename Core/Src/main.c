@@ -54,6 +54,7 @@
 #define MAX_RSSI_INTERVAL_COUNTER 100
 #define MAX_DISTANCE 40
 #define MAX_STOP_CUE_INTERVAL_COUNTER 100
+#define RSSI_DISTANCE_THRESHOLD 55
 
 #define NEW_RSSI_INDEX 0 
 #define OLD_RSSI_INDEX 1
@@ -399,7 +400,7 @@ int main(void)
 
     
     if (RSSI_interval_counter == MAX_RSSI_INTERVAL_COUNTER) {
-      print_msg("get rssi\r\n");
+      // print_msg("get rssi\r\n");
       // get RRSI
       uint8_t rssi_response;
       BLE_Get_RSSI(&huart6, &rssi_response, 1);
@@ -420,7 +421,7 @@ int main(void)
       uint8_t rssi_value;
       BLE_Get_RSSI(&huart6, &rssi_value, 0);
 
-      if (rssi_value < 61) {
+      if (rssi_value < RSSI_DISTANCE_THRESHOLD && jonahvinav == 1) {
         jonahvinav = 0;
         Motor_A_Control(0, 0);
         Motor_B_Control(0, 0);
@@ -1560,85 +1561,74 @@ void  BLE_InitConfigure(void) {
 }
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
   if (huart->Instance == USART6) { //BLE 1   (master BLE)
-    // Put byte in buffer and increment write position
     ble1_rx_buffer[ble1_rx_write_pos++] = ble1_rx_data;
-    ble1_rx_buffer[ble1_rx_write_pos] = '\0'; // Null-terminate
+    ble1_rx_buffer[ble1_rx_write_pos] = '\0'; 
 
-    // Check for connection messages with proper line endings
     if (strstr(ble1_rx_buffer, "OK+CONN") != NULL) {
       ble1_connected = 1;
       print_msg("Connected\r\n");
-      ble1_rx_write_pos = 0; // Reset buffer
+      ble1_rx_write_pos = 0; 
       ble1_rx_buffer[0] = '\0';
     } 
     else if (strstr(ble1_rx_buffer, "OK+LOST") != NULL) {
       ble1_connected = 0;
       print_msg("Disconnected\r\n");
-      ble1_rx_write_pos = 0; // Reset buffer
+      ble1_rx_write_pos = 0; 
       ble1_rx_buffer[0] = '\0';
     }
 
-    // Safety check - if buffer is getting too full, reset it
     if (ble1_rx_write_pos >= BLE_RX_BUFFER_SIZE - 2) {
       ble1_rx_write_pos = 0;
       ble1_rx_buffer[0] = '\0';
     }
 
-    // Restart the interrupt reception
     HAL_UART_Receive_IT(&huart6, &ble1_rx_data, 1);
   } else if (huart->Instance == USART2) { /// BLE 2
-    // Put byte in buffer and increment write position
     ble2_rx_buffer[ble2_rx_write_pos++] = ble2_rx_data;
-    ble2_rx_buffer[ble2_rx_write_pos] = '\0'; // Null-terminate
+    ble2_rx_buffer[ble2_rx_write_pos] = '\0'; 
 
-    // Check for connection messages with proper line endings
     if (strstr(ble2_rx_buffer, "OK+CONN") != NULL) {
       ble2_connected = 1;
       print_msg("Connected\r\n");
-      ble2_rx_write_pos = 0; // Reset buffer
+      ble2_rx_write_pos = 0;
       ble2_rx_buffer[0] = '\0';
     } 
     else if (strstr(ble2_rx_buffer, "OK+LOST") != NULL) {
       ble2_connected = 0;
       print_msg("Disconnected\r\n");
-      ble2_rx_write_pos = 0; // Reset buffer
+      ble2_rx_write_pos = 0;
       ble2_rx_buffer[0] = '\0';
     }
 
-    // Safety check - if buffer is getting too full, reset it
     if (ble2_rx_write_pos >= BLE_RX_BUFFER_SIZE - 2) {
       ble2_rx_write_pos = 0;
       ble2_rx_buffer[0] = '\0';
     }
 
-    // Restart the interrupt reception
     HAL_UART_Receive_IT(&huart2, &ble2_rx_data, 1);
-  } else if (huart->Instance == UART4) { // BLE 3
-    // Put byte in buffer and increment write position
-    ble3_rx_buffer[ble3_rx_write_pos++] = ble3_rx_data;
-    ble3_rx_buffer[ble3_rx_write_pos] = '\0'; // Null-terminate
+  } else if (huart->Instance == UART4) { 
 
-    // Check for connection messages with proper line endings
+    ble3_rx_buffer[ble3_rx_write_pos++] = ble3_rx_data;
+    ble3_rx_buffer[ble3_rx_write_pos] = '\0'; 
+
     if (strstr(ble3_rx_buffer, "OK+CONN") != NULL) {
       ble3_connected = 1;
       print_msg("Connected\r\n");
-      ble3_rx_write_pos = 0; // Reset buffer
+      ble3_rx_write_pos = 0;
       ble3_rx_buffer[0] = '\0';
     } 
     else if (strstr(ble3_rx_buffer, "OK+LOST") != NULL) {
       ble3_connected = 0;
       print_msg("Disconnected\r\n");
-      ble3_rx_write_pos = 0; // Reset buffer
+      ble3_rx_write_pos = 0; 
       ble3_rx_buffer[0] = '\0';
     }
 
-    // Safety check - if buffer is getting too full, reset it
     if (ble3_rx_write_pos >= BLE_RX_BUFFER_SIZE - 2) {
       ble3_rx_write_pos = 0;
       ble3_rx_buffer[0] = '\0';
     }
 
-    // Restart the interrupt reception
     HAL_UART_Receive_IT(&huart4, &ble3_rx_data, 1);
   }
 }
@@ -1694,56 +1684,43 @@ void BLE_Process_Data(uint8_t ble_num) {
   }
 }
 
-//USS ultrasonic sensor functions
 void USS_Delay_us(uint16_t us){
   __HAL_TIM_SET_COUNTER(&htim3, 0);
   while (__HAL_TIM_GET_COUNTER(&htim3) < us);
 }
 void USS_Init_1(void){
-  // Start the timer base
   HAL_TIM_Base_Start(&htim3);
   
-  // Start input capture in interrupt mode
   HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_1);
 }
 void USS_Init_2(void){
-  // Start the timer base
   HAL_TIM_Base_Start(&htim4);
   
-  // Start input capture in interrupt mode
   HAL_TIM_IC_Start_IT(&htim4, TIM_CHANNEL_1);
 }
 void USS_Init_3(void){
-  // Start the timer base
   HAL_TIM_Base_Start(&htim5);
   
-  // Start input capture in interrupt mode
   HAL_TIM_IC_Start_IT(&htim5, TIM_CHANNEL_1);
 }
 
 void USS_Trigger_1(void){
-  // Reset capture complete flag
   echo_capture_complete_1 = 0;
   
-  // Generate 10us pulse on TRIG pin
   HAL_GPIO_WritePin(USS_1_TRIG_GPIO_Port, USS_1_TRIG_Pin, GPIO_PIN_SET);
   USS_Delay_us(10);
   HAL_GPIO_WritePin(USS_1_TRIG_GPIO_Port, USS_1_TRIG_Pin, GPIO_PIN_RESET);
 }
 void USS_Trigger_2(void){
-  // Reset capture complete flag
   echo_capture_complete_2 = 0;
   
-  // Generate 10us pulse on TRIG pin
   HAL_GPIO_WritePin(USS_2_TRIG_GPIO_Port, USS_2_TRIG_Pin, GPIO_PIN_SET);
   USS_Delay_us(10);
   HAL_GPIO_WritePin(USS_2_TRIG_GPIO_Port, USS_2_TRIG_Pin, GPIO_PIN_RESET);
 }
 void USS_Trigger_3(void){
-  // Reset capture complete flag
   echo_capture_complete_3 = 0;
   
-  // Generate 10us pulse on TRIG pin
   HAL_GPIO_WritePin(USS_3_TRIG_GPIO_Port, USS_3_TRIG_Pin, GPIO_PIN_SET);
   USS_Delay_us(10);
   HAL_GPIO_WritePin(USS_3_TRIG_GPIO_Port, USS_3_TRIG_Pin, GPIO_PIN_RESET);
@@ -1753,12 +1730,10 @@ uint8_t USS_Read_1(uint32_t* distance) {
   if (!echo_capture_complete_1)
     return 0;
     
-  // Calculate pulse width
   uint32_t pulse_width;
   if (echo_fall_time_1 > echo_rise_time_1) {
     pulse_width = echo_fall_time_1 - echo_rise_time_1;
   } else {
-    // Handle timer overflow
     pulse_width = ((0xFFFF - echo_rise_time_1) + echo_fall_time_1 + 1);
   }
   
@@ -1774,12 +1749,10 @@ uint8_t USS_Read_2(uint32_t* distance) {
   if (!echo_capture_complete_2)
     return 0;
     
-  // Calculate pulse width
   uint32_t pulse_width;
   if (echo_fall_time_2 > echo_rise_time_2) {
     pulse_width = echo_fall_time_2 - echo_rise_time_2;
   } else {
-    // Handle timer overflow
     pulse_width = ((0xFFFF - echo_rise_time_2) + echo_fall_time_2 + 1);
   }
   
@@ -1795,12 +1768,10 @@ uint8_t USS_Read_3(uint32_t* distance) {
   if (!echo_capture_complete_3)
     return 0;
     
-  // Calculate pulse width
   uint32_t pulse_width;
   if (echo_fall_time_3 > echo_rise_time_3) {
     pulse_width = echo_fall_time_3 - echo_rise_time_3;
   } else {
-    // Handle timer overflow
     pulse_width = ((0xFFFF - echo_rise_time_3) + echo_fall_time_3 + 1);
   }
   
@@ -1813,43 +1784,30 @@ uint8_t USS_Read_3(uint32_t* distance) {
 }
 
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
-  // if it is tim3 (USS) and it is the echo channel (tim3 channel 1)
   if (htim->Instance == TIM3 && htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1) {
     if (HAL_GPIO_ReadPin(USS_1_ECHO_GPIO_Port, USS_1_ECHO_Pin) == GPIO_PIN_SET) {
-      // Rising edge detected
       echo_rise_time_1 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
-      // Change polarity to capture falling edge
       __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_FALLING);
     } else {
-      // Falling edge detected
       echo_fall_time_1 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
-      // Change back to capture rising edge
       __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_RISING);
       echo_capture_complete_1 = 1;
     }
   } else if (htim->Instance == TIM4 && htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1) {
     if (HAL_GPIO_ReadPin(USS_2_ECHO_GPIO_Port, USS_2_ECHO_Pin) == GPIO_PIN_SET) {
-      // Rising edge detected
       echo_rise_time_2 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
-      // Change polarity to capture falling edge
       __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_FALLING);
     } else {
-      // Falling edge detected
       echo_fall_time_2 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
-      // Change back to capture rising edge
       __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_RISING);
       echo_capture_complete_2 = 1;
     }
   } else if (htim->Instance == TIM5 && htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1) {
     if (HAL_GPIO_ReadPin(USS_3_ECHO_GPIO_Port, USS_3_ECHO_Pin) == GPIO_PIN_SET) {
-      // Rising edge detected
       echo_rise_time_3 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
-      // Change polarity to capture falling edge
       __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_FALLING);
     } else {
-      // Falling edge detected
       echo_fall_time_3 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
-      // Change back to capture rising edge
       __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_RISING);
       echo_capture_complete_3 = 1;
     }
